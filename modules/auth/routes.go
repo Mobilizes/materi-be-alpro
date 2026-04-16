@@ -1,13 +1,23 @@
 package auth
 
 import (
-	"github.com/gin-gonic/gin"
 	"github.com/Mobilizes/materi-be-alpro/modules/auth/controller"
+	"github.com/gin-gonic/gin"
+	"github.com/samber/do"
 )
 
-func RegisterAuthRoutes(r *gin.RouterGroup, ctrl *controller.AuthController) {
-	auth := r.Group("/auth")
+func RegisterRoutes(server *gin.Engine, injector *do.Injector) {
+	authController := do.MustInvoke[controller.AuthController](injector)
+
+	authRoutes := server.Group("/api/auth")
 	{
-		auth.POST("/login", ctrl.Login)
+		authRoutes.POST("/register", authController.Register)
+		authRoutes.POST("/login", authController.Login)
+		authRoutes.POST("/refresh", authController.RefreshToken)
+		authRoutes.POST("/logout", authController.Logout)
+		authRoutes.POST("/send-verification-email", authController.SendVerificationEmail)
+		authRoutes.POST("/verify-email", authController.VerifyEmail)
+		authRoutes.POST("/send-password-reset", authController.SendPasswordReset)
+		authRoutes.POST("/reset-password", authController.ResetPassword)
 	}
 }

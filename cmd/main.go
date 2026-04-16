@@ -1,54 +1,69 @@
 package main
 
 import (
-    "log"
-    "github.com/gin-gonic/gin"
-    "github.com/joho/godotenv"
-    "github.com/Mobilizes/materi-be-alpro/config"
-    "github.com/Mobilizes/materi-be-alpro/database/entities"
-    "github.com/Mobilizes/materi-be-alpro/modules/user"
-    userController "github.com/Mobilizes/materi-be-alpro/modules/user/controller"
-    userRepository "github.com/Mobilizes/materi-be-alpro/modules/user/repository"
-    userService "github.com/Mobilizes/materi-be-alpro/modules/user/service"
+	"log"
+	"os"
 
-    "github.com/Mobilizes/materi-be-alpro/modules/auth"
-    authController "github.com/Mobilizes/materi-be-alpro/modules/auth/controller"
-    authService "github.com/Mobilizes/materi-be-alpro/modules/auth/service"
+	"github.com/Mobilizes/materi-be-alpro/middlewares"
+	"github.com/Mobilizes/materi-be-alpro/modules/auth"
+	"github.com/Mobilizes/materi-be-alpro/modules/user"
+	"github.com/Mobilizes/materi-be-alpro/providers"
+	"github.com/Mobilizes/materi-be-alpro/script"
+	"github.com/samber/do"
+
+	"github.com/common-nighthawk/go-figure"
+	"github.com/gin-gonic/gin"
 )
 
+func args(injector *do.Injector) bool {
+	if len(os.Args) > 1 {
+		flag := script.Commands(injector)
+		return flag
+	}
+
+	return true
+}
+
+func run(server *gin.Engine) {
+	server.Static("/assets", "./assets")
+
+	port := os.Getenv("GOLANG_PORT")
+	if port == "" {
+		port = "8888"
+	}
+
+	var serve string
+	if os.Getenv("APP_ENV") == "localhost" {
+		serve = "0.0.0.0:" + port
+	} else {
+		serve = ":" + port
+	}
+
+	myFigure := figure.NewColorFigure("Alpro", "", "green", true)
+	myFigure.Print()
+
+	if err := server.Run(serve); err != nil {
+		log.Fatalf("error running server: %v", err)
+	}
+}
+
 func main() {
-    // Load .env
-    err := godotenv.Load()
-    if err != nil {
-        log.Println("Warning: Error loading .env file")
-    }
+	var (
+		injector = do.New()
+	)
 
-    // Connect to database
-    db := config.SetupDatabase()
+	providers.RegisterDependencies(injector)
 
-    // Auto migrate the user module
-    db.AutoMigrate(&entities.User{})
+	if !args(injector) {
+		return
+	}
 
-    // Initialize Gin app
-    r := gin.Default()
+	server := gin.Default()
+	server.Use(middlewares.CORSMiddleware())
 
-    // Setup routes group
-    api := r.Group("/api")
+	// Register module routes
+	user.RegisterRoutes(server, injector)
+	auth.RegisterRoutes(server, injector)
 
-    // Setup Services
-    jwtSvc := authService.NewJWTService()
-    userRepo := userRepository.NewUserRepository(db)
-    uService := userService.NewUserService(userRepo)
-    aService := authService.NewAuthService(userRepo, jwtSvc)
-
-    // Setup Controllers
-    userCtrl := userController.NewUserController(uService)
-    authCtrl := authController.NewAuthController(aService)
-
-    // Register Routes
-    auth.RegisterAuthRoutes(api, authCtrl)
-    user.RegisterUserRoutes(api, userCtrl, jwtSvc)
-
-    // Start App
-    r.Run()
+	run(server)
 }

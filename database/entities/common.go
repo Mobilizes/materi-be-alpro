@@ -1,14 +1,15 @@
 package entities
 
 import (
-    "time"
-    "gorm.io/gorm"
+	"time"
 )
 
-// Common model equivalent of gorm.Model
-type Common struct {
-    ID        uint           `gorm:"primarykey" json:"id"`
-    CreatedAt time.Time      `json:"created_at"`
-    UpdatedAt time.Time      `json:"updated_at"`
-    DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at"`
+type Timestamp struct {
+	CreatedAt time.Time `gorm:"type:timestamp with time zone" json:"created_at"`
+	UpdatedAt time.Time `gorm:"type:timestamp with time zone" json:"updated_at"`
+}
+
+type Authorization struct {
+	Token string `json:"token" binding:"required"`
+	Role  string `json:"role" binding:"required,oneof=user admin"`
 }

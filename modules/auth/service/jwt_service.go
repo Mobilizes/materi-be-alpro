@@ -1,63 +1,104 @@
 package service
 
 import (
-	"errors"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"log"
 	"os"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/Mobilizes/materi-be-alpro/database/entities"
+	"github.com/golang-jwt/jwt/v4"
 )
 
-type JWTService struct {
-	secretKey string
+type JWTService interface {
+	GenerateAccessToken(userId string, role string) string
+	GenerateRefreshToken() (string, time.Time)
+	ValidateToken(token string) (*jwt.Token, error)
+	GetUserIDByToken(token string) (string, error)
 }
 
-func NewJWTService() *JWTService {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		secret = "fallback_secret_key"
-	}
-	return &JWTService{secretKey: secret}
-}
-
-type CustomClaim struct {
-	UserID uint   `json:"user_id"`
-	Email  string `json:"email"`
+type jwtCustomClaim struct {
+	UserID string `json:"user_id"`
 	Role   string `json:"role"`
 	jwt.RegisteredClaims
 }
 
-func (s *JWTService) GenerateToken(user *entities.User) (string, error) {
-	claims := CustomClaim{
-		user.ID,
-		user.Email,
-		user.Role,
+type jwtService struct {
+	secretKey     string
+	issuer        string
+	accessExpiry  time.Duration
+	refreshExpiry time.Duration
+}
+
+func NewJWTService() JWTService {
+	return &jwtService{
+		secretKey:     getSecretKey(),
+		issuer:        "Template",
+		accessExpiry:  time.Minute * 15,
+		refreshExpiry: time.Hour * 24 * 7,
+	}
+}
+
+func getSecretKey() string {
+	secretKey := os.Getenv("JWT_SECRET")
+	if secretKey == "" {
+		secretKey = "Template"
+	}
+	return secretKey
+}
+
+func (j *jwtService) GenerateAccessToken(userId string, role string) string {
+	claims := jwtCustomClaim{
+		userId,
+		role,
 		jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(j.accessExpiry)),
+			Issuer:    j.issuer,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
+
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(s.secretKey))
+	tx, err := token.SignedString([]byte(j.secretKey))
+	if err != nil {
+		log.Println(err)
+	}
+	return tx
 }
 
-func (s *JWTService) ValidateToken(tokenString string) (*CustomClaim, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &CustomClaim{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("invalid token signing method")
-		}
-		return []byte(s.secretKey), nil
-	})
-
+func (j *jwtService) GenerateRefreshToken() (string, time.Time) {
+	b := make([]byte, 32)
+	_, err := rand.Read(b)
 	if err != nil {
-		return nil, err
+		log.Println(err)
+		return "", time.Time{}
 	}
 
-	claims, ok := token.Claims.(*CustomClaim)
-	if ok && token.Valid {
-		return claims, nil
+	refreshToken := base64.StdEncoding.EncodeToString(b)
+	expiresAt := time.Now().Add(j.refreshExpiry)
+
+	return refreshToken, expiresAt
+}
+
+func (j *jwtService) parseToken(t_ *jwt.Token) (any, error) {
+	if _, ok := t_.Method.(*jwt.SigningMethodHMAC); !ok {
+		return nil, fmt.Errorf("unexpected signing method %v", t_.Header["alg"])
+	}
+	return []byte(j.secretKey), nil
+}
+
+func (j *jwtService) ValidateToken(token string) (*jwt.Token, error) {
+	return jwt.Parse(token, j.parseToken)
+}
+
+func (j *jwtService) GetUserIDByToken(token string) (string, error) {
+	tToken, err := j.ValidateToken(token)
+	if err != nil {
+		return "", err
 	}
 
-	return nil, errors.New("invalid token")
+	claims := tToken.Claims.(jwt.MapClaims)
+	id := fmt.Sprintf("%v", claims["user_id"])
+	return id, nil
 }

@@ -1,60 +1,112 @@
 package controller
 
 import (
-    "net/http"
-    "strconv"
+	"net/http"
 
-    "github.com/gin-gonic/gin"
-    "github.com/Mobilizes/materi-be-alpro/modules/user/service"
-    "github.com/Mobilizes/materi-be-alpro/modules/user/validation"
-    "github.com/Mobilizes/materi-be-alpro/pkg/utils"
+	"github.com/Mobilizes/materi-be-alpro/modules/user/dto"
+	"github.com/Mobilizes/materi-be-alpro/modules/user/query"
+	"github.com/Mobilizes/materi-be-alpro/modules/user/service"
+	"github.com/Mobilizes/materi-be-alpro/modules/user/validation"
+	"github.com/Mobilizes/materi-be-alpro/pkg/constants"
+	"github.com/Mobilizes/materi-be-alpro/pkg/utils"
+	"github.com/Caknoooo/go-pagination"
+	"github.com/gin-gonic/gin"
+	"github.com/samber/do"
+	"gorm.io/gorm"
 )
 
-type UserController struct {
-    service *service.UserService
+type (
+	UserController interface {
+		Me(ctx *gin.Context)
+		GetAllUser(ctx *gin.Context)
+		Update(ctx *gin.Context)
+		Delete(ctx *gin.Context)
+	}
+
+	userController struct {
+		userService    service.UserService
+		userValidation *validation.UserValidation
+		db             *gorm.DB
+	}
+)
+
+func NewUserController(injector *do.Injector, us service.UserService) UserController {
+	db := do.MustInvokeNamed[*gorm.DB](injector, constants.DB)
+	userValidation := validation.NewUserValidation()
+	return &userController{
+		userService:    us,
+		userValidation: userValidation,
+		db:             db,
+	}
 }
 
-func NewUserController(service *service.UserService) *UserController {
-    return &UserController{service: service}
+func (c *userController) GetAllUser(ctx *gin.Context) {
+	var filter = &query.UserFilter{}
+	filter.BindPagination(ctx)
+
+	ctx.ShouldBindQuery(filter)
+
+	users, total, err := pagination.PaginatedQueryWithIncludable[query.User](c.db, filter)
+	if err != nil {
+		res := utils.BuildResponseFailed(dto.MESSAGE_FAILED_GET_USER, err.Error(), nil)
+		ctx.JSON(http.StatusBadRequest, res)
+		return
+	}
+
+	paginationResponse := pagination.CalculatePagination(filter.Pagination, total)
+	response := pagination.NewPaginatedResponse(http.StatusOK, dto.MESSAGE_SUCCESS_GET_LIST_USER, users, paginationResponse)
+	ctx.JSON(http.StatusOK, response)
 }
 
-func (ctrl *UserController) CreateUser(c *gin.Context) {
-    req, err := validation.ValidateCreateUser(c)
-    if err != nil {
-        utils.ErrorResponse(c, http.StatusBadRequest, err.Error())
-        return
-    }
+func (c *userController) Me(ctx *gin.Context) {
+	userId := ctx.MustGet("user_id").(string)
 
-    user, err := ctrl.service.CreateUser(req)
-    if err != nil {
-        utils.ErrorResponse(c, http.StatusInternalServerError, "Gagal membuat user")
-        return
-    }
+	result, err := c.userService.GetUserById(ctx.Request.Context(), userId)
+	if err != nil {
+		res := utils.BuildResponseFailed(dto.MESSAGE_FAILED_GET_USER, err.Error(), nil)
+		ctx.JSON(http.StatusBadRequest, res)
+		return
+	}
 
-    utils.SuccessResponse(c, http.StatusCreated, "User berhasil dibuat", user)
+	res := utils.BuildResponseSuccess(dto.MESSAGE_SUCCESS_GET_USER, result)
+	ctx.JSON(http.StatusOK, res)
 }
 
-func (ctrl *UserController) GetUserByID(c *gin.Context) {
-    id, err := strconv.Atoi(c.Param("id"))
-    if err != nil {
-        utils.ErrorResponse(c, http.StatusBadRequest, "ID tidak valid")
-        return
-    }
+func (c *userController) Update(ctx *gin.Context) {
+	var req dto.UserUpdateRequest
+	if err := ctx.ShouldBind(&req); err != nil {
+		res := utils.BuildResponseFailed(dto.MESSAGE_FAILED_GET_DATA_FROM_BODY, err.Error(), nil)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, res)
+		return
+	}
 
-    user, err := ctrl.service.GetUserByID(uint(id))
-    if err != nil {
-        utils.ErrorResponse(c, http.StatusNotFound, "User tidak ditemukan")
-        return
-    }
+	if err := c.userValidation.ValidateUserUpdateRequest(req); err != nil {
+		res := utils.BuildResponseFailed("Validation failed", err.Error(), nil)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, res)
+		return
+	}
 
-    utils.SuccessResponse(c, http.StatusOK, "OK", user)
+	userId := ctx.MustGet("user_id").(string)
+	result, err := c.userService.Update(ctx.Request.Context(), req, userId)
+	if err != nil {
+		res := utils.BuildResponseFailed(dto.MESSAGE_FAILED_UPDATE_USER, err.Error(), nil)
+		ctx.JSON(http.StatusBadRequest, res)
+		return
+	}
+
+	res := utils.BuildResponseSuccess(dto.MESSAGE_SUCCESS_UPDATE_USER, result)
+	ctx.JSON(http.StatusOK, res)
 }
 
-func (ctrl *UserController) GetAllUsers(c *gin.Context) {
-    users, err := ctrl.service.GetAllUsers()
-    if err != nil {
-        utils.ErrorResponse(c, http.StatusInternalServerError, "Gagal mengambil data")
-        return
-    }
-    utils.SuccessResponse(c, http.StatusOK, "OK", users)
+func (c *userController) Delete(ctx *gin.Context) {
+	userId := ctx.MustGet("user_id").(string)
+
+	if err := c.userService.Delete(ctx.Request.Context(), userId); err != nil {
+		res := utils.BuildResponseFailed(dto.MESSAGE_FAILED_DELETE_USER, err.Error(), nil)
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, res)
+		return
+	}
+
+	res := utils.BuildResponseSuccess(dto.MESSAGE_SUCCESS_DELETE_USER, nil)
+	ctx.JSON(http.StatusOK, res)
 }
