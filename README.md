@@ -503,36 +503,58 @@ type User struct {
 > - `uuid.UUID` -- Tipe data UUID (Universally Unique Identifier), yaitu ID unik yang panjang seperti `550e8400-e29b-41d4-a716-446655440000`.
 
 Konfigurasi database dipisahkan ke `config/database.go`:
+Dalam struct GORM, kamu dapat memberikan atribut ke baris di entity dengan menambahkan field tags.  
+Untuk field tags yang lengkap, dapat dilihat di [dokumentasi GORM](https://gorm.io/docs/models.html#Fields-Tags)
 
 ```go
-// config/database.go
-package config
+package main
 
 import (
-    "fmt"
-    "gorm.io/driver/postgres"
-    "gorm.io/gorm"
+	"fmt"
+
+	"github.com/google/uuid"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
-func SetupDatabase() *gorm.DB {
-    dsn := fmt.Sprintf(
-        "host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
-        os.Getenv("DB_HOST"),
-        os.Getenv("DB_USER"),
-        os.Getenv("DB_PASSWORD"),
-        os.Getenv("DB_NAME"),
-        os.Getenv("DB_PORT"),
-    )
+type User struct {
+	ID       uuid.UUID `gorm:"type:uuid;primary_key;default:uuid_generate_v4()" json:"id"`
+	Name     string    `gorm:"not null" json:"name"`
+	Email    string    `gorm:"unique;not null" json:"email"`
+	Password string    `gorm:"not null" json:"-"` // tidak muncul di JSON response
+}
 
-    db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-    if err != nil {
-        panic("gagal konek ke database: " + err.Error())
-    }
+Database dijalankan via Docker agar tidak perlu install PostgreSQL secara lokal:
+func main() {
+	// Harusnya menggunakan .env but for demonstration only
+	dsn := "host=localhost user=username password=password dbname=go_workshop port=5432 sslmode=disable TimeZone=Asia/Jakarta"
 
-    return db
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		panic("failed to connect database")
+	}
+
+	// Karena user menggunakan uuid
+	db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+
+	db.AutoMigrate(&User{})
+
+	newUser := User{
+		Name:     "John Doe",
+		Email:    "john@example.com",
+		Password: "hashed_password_here",
+	}
+	db.Create(&newUser)
+	fmt.Println("Created User ID:", newUser.ID)
+
+	var user User
+	db.First(&user, "id = ?", newUser.ID)
+	fmt.Println("User:", user)
+
+	db.Delete(&user, "id = ?", user.ID)
+	fmt.Println("Deleted user!")
 }
 ```
-
 > [!NOTE]
 > - `dsn` (Data Source Name) -- String yang berisi semua informasi untuk koneksi ke database (alamat server, username, password, nama database, port).
 > - `os.Getenv("DB_HOST")` -- Mengambil nilai dari **environment variable**. Environment variable adalah pengaturan yang disimpan di luar kode (biasanya di file `.env`) agar data sensitif seperti password tidak di-hardcode.
@@ -540,38 +562,115 @@ func SetupDatabase() *gorm.DB {
 > - `&gorm.Config{}` -- Tanda `&` mengambil **alamat memori** (pointer) dari objek. Ini kebalikan dari `*` yang mengambil nilai dari pointer. Untuk sekarang, cukup ingat: `&` = "berikan referensi ke objek ini."
 > - `panic(...)` -- Menghentikan program secara paksa dengan pesan error. Digunakan untuk error yang **tidak bisa dipulihkan** seperti gagal koneksi database.
 
-Database dijalankan via Docker agar tidak perlu install PostgreSQL secara lokal:
-
-```bash
-# Jalankan PostgreSQL via Docker Compose
-docker-compose up -d
-
-# Cek container berjalan
-docker ps
-```
-
-> [!NOTE]
-> Docker adalah alat yang menjalankan software di dalam "kontainer" terisolasi. Dengan Docker, kamu tidak perlu install PostgreSQL langsung di komputermu -- Docker akan mendownload dan menjalankannya secara otomatis. Flag `-d` artinya "detached" (berjalan di background).
+Perlu diingat bahwa kamu perlu mensetup Postgres kamu terlebih dahulu:
+- Buat user di postgres `(CREATE USER your_username WITH PASSWORD 'your_password';)`
+- Buat database di postgres `(CREATE DATABASE your_dbname;)`
+- Berikan user akses ke database tersebut `(ALTER DATABASE your_dbname OWNER TO your_username;)`
 
 ---
 
-## Membedah Boilerplate
+Jika kita menggabungkan kedua library ini, bentuk `main.go` akan seperti ini:
 
-Setelah semua kode ada di satu file `main.go`, peserta sudah bisa membuat API sederhana. Tapi di dunia nyata, tidak ada yang menulis semua kode di satu file. Bagian ini menjelaskan **mengapa** dan **bagaimana** kode diorganisir di boilerplate yang akan kita pakai.
+```go
+package main
 
-### Kenapa Tidak Semua di `main.go`?
+import (
+	"fmt"
+	"net/http"
 
-Bayangkan sebuah dapur restoran:
-- **Chef** tidak berbelanja, memasak, sekaligus mencuci piring sendiri.
-- Ada pembagian tugas yang jelas agar dapur tetap efisien.
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+)
 
-Kode pun sama. Jika semua logic ada di `main.go`:
-- File menjadi ribuan baris -- susah dibaca.
-- Sulit mengganti satu bagian tanpa merusak bagian lain.
-- Tidak bisa di-test secara terpisah.
-- Kolaborasi tim menjadi kacau.
+type User struct {
+	ID       uuid.UUID `gorm:"type:uuid;primary_key;default:uuid_generate_v4()" json:"id"`
+	Name     string    `gorm:"not null" json:"name"`
+	Email    string    `gorm:"unique;not null" json:"email"`
+	Password string    `gorm:"not null" json:"-"` // Does not appear in JSON response
+}
 
-### Struktur Folder Boilerplate
+func main() {
+	// Harusnya menggunakan .env but for demonstration only
+	dsn := "host=localhost user=postgres password=root dbname=go_workshop port=5432 sslmode=disable TimeZone=Asia/Jakarta"
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		panic("failed to connect database")
+	}
+
+	// Karena user menggunakan uuid
+	db.Exec(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`)
+	db.AutoMigrate(&User{})
+	fmt.Println("Database connected and migrated successfully!")
+
+	r := gin.Default()
+
+	r.GET("/ping", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"message": "pong"})
+	})
+
+	r.POST("/users", func(c *gin.Context) {
+		var input struct {
+			Name     string `json:"name" binding:"required"`
+			Email    string `json:"email" binding:"required,email"`
+			Password string `json:"password" binding:"required"`
+		}
+
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		newUser := User{
+			Name:     input.Name,
+			Email:    input.Email,
+			Password: input.Password, // Di dalam praktek, jangan lupa untuk menghash password terlebih dahulu!
+		}
+
+		if err := db.Create(&newUser).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user", "details": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusCreated, gin.H{"message": "User created successfully", "data": newUser})
+	})
+
+	r.GET("/users", func(c *gin.Context) {
+		var users []User
+
+		if err := db.Find(&users).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"data": users})
+	})
+
+	r.DELETE("/users/:id", func(c *gin.Context) {
+		id := c.Param("id")
+
+		if err := db.Delete(&User{}, "id = ?", id).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete user"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "User deleted successfully"})
+	})
+
+	fmt.Println("Server is running on http://localhost:8080")
+	r.Run(":8080")
+}
+```
+
+Melihat kode `main.go`, hasilnya cukup panjang dan ribet bukan? Dan ini baru satu API CRUD entity.  
+Oleh karena itu, walaupun tidak diwajibkan oleh bahasa, kita perlu struktur project yang jelas dan terstruktur.
+
+### Contoh Boilerplate
+
+Boilerplate singkat kata adalah template yang sering dipakai berulang-ulang dan biasanya sedikit / tidak ada variasi, yang bertujuan untuk memberikan struktur ke project kamu.  
+
+Terdapat beberapa boilerplate backend Go yang tersedia, tetapi di workshop ini kita akan menggunakan [boilerplate ini](https://github.com/Caknoooo/go-gin-clean-starter/tree/main).
 
 Berikut adalah struktur folder boilerplate yang kita gunakan, beserta penjelasan tanggung jawab masing-masing:
 
